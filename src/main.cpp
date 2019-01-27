@@ -69,18 +69,22 @@ uint8_t readROM(uint16_t address) {
   return EEPROM.read(address);
 }*/
 
+/* Non buffered EEPROM rd-write */
 void writeROM(uint16_t address, uint8_t value) {
   EEPROM.update(address, value);
 }
 
+/* Non buffered EEPROM read */
 uint8_t readROM(uint16_t address) {
   return EEPROM.read(address);
 }
 
+/* Read two sequential bytes as uint16_t */
 uint16_t readTwoBytes(uint16_t addr) {
   return readROM(addr)*pow(2, 8)+readROM(addr+1);
 }
 
+/* Write uint16_t as two sequential bytes */
 void writeTwoBytes(uint16_t addr, uint16_t value) {
   writeROM(addr, highByte(value));
   writeROM(addr+1, lowByte(value));
@@ -90,24 +94,6 @@ void wipe() {
   for (uint16_t i = 0; i < EEPROM.length(); i++) {
     writeROM(i, 0);
   }
-}
-
-void printIndent(uint8_t indentLevel) {
-  for (uint8_t i = 0; i < indentLevel; i++) {
-    Serial.print(' ');
-  }
-}
-
-void printFile(struct File f) {
-  Serial.print(F("address: ")); Serial.println(f.address);
-  Serial.print(F("name: ")); Serial.println(f.name);
-  Serial.print(F("isDir: ")); Serial.println(f.isDir);
-  if (f.isDir) {
-    Serial.print(F("subfiles: ")); Serial.println(f.dataSize/2);
-  } else {
-    Serial.print(F("dataSize: ")); Serial.println(f.dataSize);
-  }
-  Serial.print(F("dataStartAddr: ")); Serial.println(f.dataStartAddr);
 }
 
 /* Dump the entire memory content to Serial */
@@ -157,7 +143,6 @@ void getSubfiles(struct File f, struct File *result) {
   if (!f.isDir) {
     Serial.println(F("Error: Not a directory"));
   }
-
   uint8_t j = 0;
   for (uint16_t i = f.dataStartAddr; i < f.dataStartAddr+f.dataSize; i+=2) {
     result[j] = readFile(readTwoBytes(i));
@@ -179,12 +164,9 @@ void ls() {
   getSubfiles(currentCwd, subfiles);
   Serial.print(F("Content of ")); printCwd(); Serial.println();
   for (uint8_t i = 0; i < sizeof(subfiles)/sizeof(struct File); i++) {
-    Serial.print(subfiles[i].isDir);
-    Serial.print('\t');
-    Serial.print(subfiles[i].address);
-    Serial.print('\t');
-    Serial.print(subfiles[i].dataSize);
-    Serial.print('\t');
+    Serial.print(subfiles[i].isDir); Serial.print('\t');
+    Serial.print(subfiles[i].address); Serial.print('\t');
+    Serial.print(subfiles[i].dataSize); Serial.print('\t');
     Serial.println(subfiles[i].name);
   }
 }
@@ -207,43 +189,6 @@ struct File getFileByName(String name) {
     f.name = F("ERR_FILE_NOT_FOUND");
   }
   return f;
-}
-
-/* Move up one level in the file hierarchy ("cd ..") */
-void cdPop() {
-  if (cwdPointer > 0) {
-    cwdPointer--;
-  }
-}
-
-/* Move into the given directory */
-bool cd(String dir) {
-  if (dir == "..") {
-    cdPop();
-    return true;
-  }
-
-  // Reset cwd to root dir
-  if (dir == "") {
-    cwdPointer = 0;
-    return true;
-  }
-
-  struct File cdInto = getFileByName(dir);
-
-  if (cdInto.name == F("ERR_FILE_NOT_FOUND")) {
-    Serial.println(F("Error: Directory not found."));
-    return false;
-  }
-
-  if (!cdInto.isDir) {
-    Serial.println(F("Error: Not a directory."));
-    return false;
-  }
-
-  cwdPointer++;
-  cwd[cwdPointer] = cdInto;
-  return true;
 }
 
 
@@ -292,7 +237,6 @@ void markInAllocMap(struct File f, bool value, bool wipeOnDealloc) {
 
 /* Recreate alloc map from filesystem */
 void createAllocMap() {
-
   // reset alloc map
   for (uint16_t i = 0; i < EEPROM.length(); i++) {
     setAllocMapPos(i, 0, false);
@@ -305,12 +249,17 @@ void createAllocMap() {
 
   // Add filesystem terminator to allocation map
   setAllocMapPos(fs_size-1, 1, false);
-
   // Recursively mark all files as allocated.
   markInAllocMap(cwd[0], 1, false);
 }
 
-/* Print file hierarchy to serial */
+void printIndent(uint8_t indentLevel) {
+  for (uint8_t i = 0; i < indentLevel; i++) {
+    Serial.print(' ');
+  }
+}
+
+/* Recursively print file hierarchy to serial */
 void _tree (struct File f, uint8_t indentLevel) {
   if (f.isDir) {printIndent(max(indentLevel-1, 0));} else {printIndent(indentLevel);}
   if (f.isDir) {Serial.print('[');}
@@ -412,7 +361,6 @@ uint16_t mkfile(String name, bool isDir, byte *data, uint8_t dataSize) {
 
   if (f.name != F("ERR_FILE_NOT_FOUND")) {
     Serial.print(F("Error: File already exists: ")); Serial.println(name);
-    printFile(f);
     return;
   }
 
@@ -564,7 +512,7 @@ void cat(String name) {
   Serial.println();
 }
 
-/* not working, doesn't adjust parent dir address/link & very inefficient (1-byte displ)*/
+/* not working, doesn't adjust parent dir address/link & very inefficient (repeated 1-byte displ)*/
 /*void defrag() {
   struct File currentCwd = cwd[cwdPointer];
   struct File subfiles[currentCwd.dataSize/2];
@@ -624,7 +572,44 @@ void printMemStats() {
   Serial.print(sum); Serial.print("/"); Serial.print(EEPROM.length()); Serial.println(F(" bytes allocated."));
 }
 
-/* Check whether a filesystem is readable and if so, read its metadata
+/* Move up one level in the file hierarchy ("cd ..") */
+void cdPop() {
+  if (cwdPointer > 0) {
+    cwdPointer--;
+  }
+}
+
+/* Move into the given directory */
+bool cd(String dir) {
+  if (dir == "..") {
+    cdPop();
+    return true;
+  }
+
+  // Reset cwd to root dir
+  if (dir == "") {
+    cwdPointer = 0;
+    return true;
+  }
+
+  struct File cdInto = getFileByName(dir);
+
+  if (cdInto.name == F("ERR_FILE_NOT_FOUND")) {
+    Serial.println(F("Error: Directory not found."));
+    return false;
+  }
+
+  if (!cdInto.isDir) {
+    Serial.println(F("Error: Not a directory."));
+    return false;
+  }
+
+  cwdPointer++;
+  cwd[cwdPointer] = cdInto;
+  return true;
+}
+
+/* Check whether a filesystem is readable and if so, read its header
 and return true, otherwise return false */
 bool readfs() {
   if (readROM(0) != 0xFF) {
